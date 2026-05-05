@@ -96,7 +96,7 @@
 </div>
         </aside>
         <article class="docs-content">
-            <h1 id="agent-metaskills-specification">Agent MetaSKILLs Specification</h1>
+            <h1 id="agent-metaskills">Agent MetaSKILLs</h1>
 <p>Agent MetaSKILLs are small workflow programs for AI agents. They sit next to a
 normal <code>SKILL.md</code> file and help an agent do the parts of a task that should be
 repeatable, bounded, and easy to inspect.</p>
@@ -109,7 +109,7 @@ repeatable, bounded, and easy to inspect.</p>
 <p>The specification is host-neutral. "Host" means the AI agent application that
 discovers skills, runs metaskill programs, calls models and tools, enforces
 sandboxing, and records what happened.</p>
-<h2 id="1-the-problem-metaskills-solve">1. The Problem Metaskills Solve</h2>
+<h2 id="1-the-problem-metaskills-solve">1. The Problem MetaSKILLs Solve</h2>
 <p>Static skills are great when the useful thing is instruction:</p>
 <pre><code class="language-text">When deploying, run the deploy command, check the health endpoint, and report
 the result.
@@ -135,7 +135,7 @@ loop explicit:</p>
 </ul>
 <p>In short: use a static skill for guidance; use a metaskill when the skill needs
 to run a small, repeatable procedure.</p>
-<h2 id="2-a-tiny-metaskill">2. A Tiny Metaskill</h2>
+<h2 id="2-a-tiny-metaskill">2. A Tiny MetaSKILL</h2>
 <p>A metaskill is a skill directory with two files:</p>
 <pre><code class="language-text">skills/
   require-heading/
@@ -754,24 +754,6 @@ for a focused review, and return the answer.</p>
 <li>Treat the returned <code>answer</code> field as primary and use <code>trace</code> as supporting
   evidence.</li>
 <li>Report <code>error:</code> results directly or use them to choose a fallback plan.</li>
-</ul>
-<h2 id="14-conformance-checklist">14. Conformance Checklist</h2>
-<p>A metaskills implementation conforms when it:</p>
-<ul>
-<li>Discovers skill directories through <code>SKILL.md</code>.</li>
-<li>Parses <code>name</code>, <code>description</code>, <code>metaskill</code>, and <code>metaskill_language</code>.</li>
-<li>Supports <code>metaskill_language: starlark</code>.</li>
-<li>Resolves metaskill paths safely under the skill directory.</li>
-<li>Keeps static activation separate from dynamic execution.</li>
-<li>Exposes or otherwise implements <code>run_metaskill</code>.</li>
-<li>Calls Starlark <code>run(input)</code> with the global functions <code>ask</code>, <code>command</code>, and
-  <code>trace</code>.</li>
-<li>Enforces finite ask, command, timeout, trace, and result budgets.</li>
-<li>Runs commands only through normal host policy.</li>
-<li>Returns successful executions as a string containing a JSON envelope.</li>
-<li>Returns failures as strings beginning with <code>error:</code>.</li>
-<li>Documents its discovery locations, trust policy for external metaskills, and
-  any non-portable extensions.</li>
 </ul>
         </article>
     </div>

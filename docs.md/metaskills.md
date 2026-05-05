@@ -1,4 +1,4 @@
-# Agent MetaSKILLs Specification
+# Agent MetaSKILLs
 
 Agent MetaSKILLs are small workflow programs for AI agents. They sit next to a
 normal `SKILL.md` file and help an agent do the parts of a task that should be
@@ -14,7 +14,7 @@ The specification is host-neutral. "Host" means the AI agent application that
 discovers skills, runs metaskill programs, calls models and tools, enforces
 sandboxing, and records what happened.
 
-## 1. The Problem Metaskills Solve
+## 1. The Problem MetaSKILLs Solve
 
 Static skills are great when the useful thing is instruction:
 
@@ -45,7 +45,7 @@ loop explicit:
 In short: use a static skill for guidance; use a metaskill when the skill needs
 to run a small, repeatable procedure.
 
-## 2. A Tiny Metaskill
+## 2. A Tiny MetaSKILL
 
 A metaskill is a skill directory with two files:
 
@@ -619,22 +619,3 @@ An AI agent using a metaskill-capable host SHOULD:
 - Treat the returned `answer` field as primary and use `trace` as supporting
   evidence.
 - Report `error:` results directly or use them to choose a fallback plan.
-
-## 14. Conformance Checklist
-
-A metaskills implementation conforms when it:
-
-- Discovers skill directories through `SKILL.md`.
-- Parses `name`, `description`, `metaskill`, and `metaskill_language`.
-- Supports `metaskill_language: starlark`.
-- Resolves metaskill paths safely under the skill directory.
-- Keeps static activation separate from dynamic execution.
-- Exposes or otherwise implements `run_metaskill`.
-- Calls Starlark `run(input)` with the global functions `ask`, `command`, and
-  `trace`.
-- Enforces finite ask, command, timeout, trace, and result budgets.
-- Runs commands only through normal host policy.
-- Returns successful executions as a string containing a JSON envelope.
-- Returns failures as strings beginning with `error:`.
-- Documents its discovery locations, trust policy for external metaskills, and
-  any non-portable extensions.
