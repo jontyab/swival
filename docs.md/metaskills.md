@@ -1,8 +1,10 @@
 # Agent MetaSKILLs
 
-Agent MetaSKILLs are small workflow programs for AI agents. They sit next to a
-normal `SKILL.md` file and help an agent do the parts of a task that should be
-repeatable, bounded, and easy to inspect.
+Agent MetaSKILLs are small workflow programs for AI agents. Like regular agent
+SKILLs, they are meant to be automatically loaded on-demand when the user agent
+determines they are needed. They are a dynamic extension to a regular agent
+skill: they sit next to a normal `SKILL.md` file and help an agent do the parts
+of a task that should be repeatable, bounded, and easy to inspect.
 
 This document is for two groups:
 
