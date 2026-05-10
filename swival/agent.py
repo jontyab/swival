@@ -9413,7 +9413,7 @@ def repl_loop(
             "": "ansicyan",
             "prompt.turn": "ansibrightblack",
             "prompt.chevron": "bold ansibrightcyan",
-            "prompt.name": "bold ansiwhite",
+            "prompt.name": "bold ansibrightcyan",
             "prompt.sep": "ansimagenta",
         }
     )

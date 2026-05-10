@@ -677,6 +677,7 @@ def repl_splash(
 
     _console.print()
     _console.print(text, end="")
+    _console.print(Text("  https://swival.dev", style="dim"))
 
     if model or provider or workspace:
         info_line = Text()
