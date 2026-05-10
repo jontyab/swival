@@ -6,6 +6,7 @@ import os
 import threading
 import time
 
+from rich.box import Box
 from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
@@ -16,6 +17,17 @@ from rich.rule import Rule
 from rich.spinner import Spinner
 from rich.segment import Segment
 from rich.style import Style
+
+_LEFT_ONLY_BOX = Box(
+    "    \n"
+    "│   \n"
+    "    \n"
+    "│   \n"
+    "│   \n"
+    "    \n"
+    "│   \n"
+    "    \n"
+)
 from rich.text import Text
 
 _console = Console(stderr=True)
@@ -85,10 +97,7 @@ def turn_header(n: int, max_n: int, token_est: int) -> None:
     reset_state()
     _console.print()
     title = f"Turn {n}/{max_n} (~{token_est} tokens)"
-    if _console.is_terminal:
-        _console.print(_GradientRule(title))
-    else:
-        _console.print(Rule(title, style="cyan"))
+    _console.print(Rule(title, style="cyan"))
 
 
 def llm_timing(elapsed: float, finish_reason: str) -> None:
@@ -101,13 +110,7 @@ def llm_timing(elapsed: float, finish_reason: str) -> None:
 
 _SPINNER_PHASES: list[tuple[float, str, str, str]] = [
     # (min_seconds, spinner_name, style, verb)
-    (0, "dots", "bright_cyan", "Thinking"),
-    (2, "arc", "cyan", "Reasoning"),
-    (5, "bouncingBall", "bright_blue", "Analyzing"),
-    (10, "moon", "blue", "Composing"),
-    (18, "dots3", "bright_magenta", "Elaborating"),
-    (28, "earth", "magenta", "Synthesizing"),
-    (40, "clock", "bright_cyan", "Polishing"),
+    (0, "dots", "cyan", "Thinking"),
 ]
 
 
@@ -515,18 +518,9 @@ def assistant_text(text: str) -> None:
 
 
 def repl_answer(text: str) -> None:
-    """Print a REPL answer to stdout, with syntax highlighting when on a TTY."""
+    """Print a REPL answer to stdout, rendered as markdown when on a TTY."""
     if _stdout_console.is_terminal and not _stdout_console.no_color:
-        from rich.syntax import Syntax
-
-        highlighted = Syntax(
-            text,
-            "markdown",
-            theme="ansi_dark",
-            background_color="default",
-            word_wrap=True,
-        )
-        _stdout_console.print(highlighted)
+        _stdout_console.print(Markdown(text))
     else:
         print(text)
 
@@ -660,46 +654,13 @@ def repl_splash(
     provider: str = "",
     workspace: str = "",
 ) -> None:
-    """Print a colorful startup splash banner to stderr."""
+    """Print startup info to stderr."""
     if not _console.is_terminal:
         return
 
-    logo_lines = _LOGO.split("\n")
-    max_len = max(len(ln) for ln in logo_lines)
-    text = Text()
-    for row_idx, row in enumerate(logo_lines):
-        padded = row.ljust(max_len)
-        for col_idx, ch in enumerate(padded):
-            t = col_idx / max(max_len - 1, 1)
-            r, g, b = _lerp_color(_GRADIENT_STOPS, t)
-            text.append(ch, style=Style(color=f"rgb({r},{g},{b})", bold=True))
-        text.append("\n")
-
-    _console.print()
-    _console.print(text, end="")
-    _console.print(Text("  https://swival.dev", style="dim"))
-
     if model or provider or workspace:
-        info_line = Text()
-        if model:
-            info_line.append(f"  model: {model}", style="dim")
-        if provider:
-            if model:
-                info_line.append(" · ", style="dim")
-            info_line.append(f"provider: {provider}", style="dim")
         if workspace:
-            if model or provider:
-                info_line.append(" · ", style="dim")
-            info_line.append(f"workspace: {workspace}", style="dim")
-        _console.print(info_line)
-
-    grad_rule = Text()
-    width = _console.width or 80
-    for i in range(width):
-        t = i / max(width - 1, 1)
-        r, g, b = _lerp_color(_GRADIENT_STOPS, t)
-        grad_rule.append("─", style=Style(color=f"rgb({r},{g},{b})"))
-    _console.print(grad_rule)
+            _console.print(Text(f"  workspace: {workspace}", style="dim"))
 
 
 def stderr_is_terminal() -> bool:
@@ -759,7 +720,7 @@ class streaming_preview:
         self._live: Live | None = None
         self._cached_renderable = None
         try:
-            self._max_lines = os.get_terminal_size(2).lines - 2
+            self._max_lines = os.get_terminal_size(2).lines - 4
         except OSError:
             self._max_lines = 24
 
@@ -773,6 +734,19 @@ class streaming_preview:
             self._live = None
         else:
             self._spinner.stop()
+        # Print dimmed truncated summary
+        text = "".join(self._buf).strip()
+        if text:
+            lines = text.splitlines()
+            if len(lines) > 10:
+                text = "\n".join(lines[:10]) + "\n\n…"
+            _console.print(Panel(
+                Markdown(text, style="dim"),
+                border_style="blue dim",
+                box=_LEFT_ONLY_BOX,
+                padding=(0, 1),
+                expand=True,
+            ))
         return False
 
     def update(self, delta: str) -> None:
@@ -810,7 +784,22 @@ class streaming_preview:
                 else:
                     self._cached_renderable = None
             if self._cached_renderable is None:
-                renderable = _BlinkingCursor(visible)
+                from rich.syntax import Syntax
+                import textwrap
+                wrap_width = max(_console.width - 2, 40)
+                wrapped = []
+                for line in visible.splitlines():
+                    if len(line) > wrap_width:
+                        wrapped.extend(textwrap.wrap(line, wrap_width) or [""])
+                    else:
+                        wrapped.append(line)
+                # Cap after wrapping to ensure rendered height fits terminal
+                if len(wrapped) > self._max_lines:
+                    wrapped = wrapped[-self._max_lines:]
+                renderable = Syntax(
+                    "\n".join(wrapped), "markdown", theme="ansi_dark",
+                    background_color="default",
+                )
             else:
                 renderable = self._cached_renderable
             self._live.update(renderable)
