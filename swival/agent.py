@@ -1,6 +1,5 @@
 import argparse
 from collections.abc import Callable
-from contextlib import nullcontext
 import copy
 from dataclasses import dataclass
 from datetime import datetime
@@ -731,6 +730,29 @@ def _promote_reasoning_content(msg) -> None:
     if reasoning:
         msg.content = _sanitize_assistant_content(reasoning)
         msg.reasoning_content = None
+
+
+def _extract_streaming_reasoning(msg) -> None:
+    """Separate <think> blocks from content after stream_chunk_builder.
+
+    stream_chunk_builder may leave <think> blocks in content that the
+    non-streaming provider path would have put in reasoning_content.
+    Uses litellm's own _parse_content_for_reasoning (the same extraction
+    used in non-streaming responses) to normalize the format.
+    """
+    content = getattr(msg, "content", None)
+    if not content or not isinstance(content, str):
+        return
+    try:
+        from litellm.litellm_core_utils.prompt_templates.common_utils import (
+            _parse_content_for_reasoning,
+        )
+    except ImportError:
+        return
+    reasoning, cleaned = _parse_content_for_reasoning(content)
+    if reasoning is not None:
+        msg.content = (cleaned or "").strip()
+        msg.reasoning_content = reasoning
 
 
 def _msg_to_dict(msg) -> dict:
@@ -3121,11 +3143,19 @@ def _is_vision_rejection(error: "AgentError") -> bool:
     return any(pattern in msg for pattern in _VISION_REJECTION_PATTERNS)
 
 
-def _completion_with_retry(completion_kwargs, *, max_retries, verbose):
+def _completion_with_retry(
+    completion_kwargs, *, max_retries, verbose, stream_callback=None, stream_reset=None
+):
     """Call litellm.completion() with retry on transient errors.
 
     Returns (response, provider_retries) where provider_retries is the number
     of retries performed (0 = first attempt succeeded).
+
+    When *stream_callback* is not None, ``stream=True`` is added to the call
+    and chunks are iterated.  *stream_callback(delta_text)* is called for each
+    non-empty content delta.  The chunks are reassembled into a full response
+    via ``litellm.stream_chunk_builder``.  On retry, *stream_reset()* is called
+    (if provided) to clear the preview buffer.
 
     On failure, attaches ``_provider_retries`` to the raised exception so
     callers can record how many attempts were made before the error.
@@ -3138,9 +3168,34 @@ def _completion_with_retry(completion_kwargs, *, max_retries, verbose):
     if max_retries < 1:
         max_retries = 1
 
+    do_stream = stream_callback is not None
+
     for attempt in range(max_retries):
         try:
-            return litellm.completion(**completion_kwargs), attempt
+            if do_stream:
+                call_kwargs = {**completion_kwargs, "stream": True}
+                raw = litellm.completion(**call_kwargs)
+                if hasattr(raw, "choices") and not hasattr(raw, "__next__"):
+                    return raw, attempt
+                chunks = []
+                _cb_alive = True
+                for chunk in raw:
+                    chunks.append(chunk)
+                    if not getattr(chunk, "choices", None):
+                        continue
+                    delta = chunk.choices[0].delta
+                    delta_text = getattr(delta, "content", None) or getattr(
+                        delta, "reasoning_content", None
+                    )
+                    if delta_text and _cb_alive:
+                        try:
+                            stream_callback(delta_text)
+                        except Exception:
+                            _cb_alive = False
+                response = litellm.stream_chunk_builder(chunks)
+                return response, attempt
+            else:
+                return litellm.completion(**completion_kwargs), attempt
         except litellm.ContextWindowExceededError:
             coe = ContextOverflowError("context window exceeded (typed)")
             coe._provider_retries = attempt
@@ -3156,6 +3211,11 @@ def _completion_with_retry(completion_kwargs, *, max_retries, verbose):
             if not _is_transient(e) or attempt == max_retries - 1:
                 e._provider_retries = attempt
                 raise
+            if do_stream and stream_reset is not None:
+                try:
+                    stream_reset()
+                except Exception:
+                    pass
             delay = min(2 * (2**attempt), 30)
             delay *= 0.75 + 0.5 * random.random()
             if verbose:
@@ -3207,6 +3267,8 @@ def call_llm(
     llm_filter=None,
     call_kind="agent",
     aws_profile=None,
+    stream_callback=None,
+    stream_reset=None,
 ):
     """Call LiteLLM with the appropriate provider.
 
@@ -3216,6 +3278,11 @@ def call_llm(
     provider_retries is the number of transient-error retries (0 = first attempt ok).
     cache_stats is (cached_tokens, cache_write_tokens); both 0 for command provider
     and SQLite cache-hit paths.
+
+    When *stream_callback* is set and the provider supports streaming, chunks
+    are iterated live and *stream_callback(delta_text)* is called per content
+    delta.  *stream_reset* clears the preview buffer on retry.  Streaming is
+    disabled when *sanitize_thinking* or *secret_shield* is active.
     """
     # --- Outbound: user-defined filter ---
     if llm_filter is not None:
@@ -3296,6 +3363,20 @@ def call_llm(
     # Resolve sanitize_thinking: opt-in only.
     if sanitize_thinking is None:
         sanitize_thinking = False
+
+    # Disable streaming when post-processing would hide content that the live
+    # preview already showed (thinking tokens, encrypted placeholders).
+    # Also disable for providers whose streaming formats are incompatible
+    # with litellm's stream_chunk_builder:
+    #   chatgpt  — Responses API usage type mismatch (litellm#26784)
+    #   bedrock  — mixed choice indices with extended thinking (litellm#23178)
+    if stream_callback is not None and (
+        sanitize_thinking
+        or secret_shield is not None
+        or provider in ("chatgpt", "bedrock")
+    ):
+        stream_callback = None
+        stream_reset = None
 
     _skip_params: set[str] = set()
     _skip_tool_choice = False
@@ -3455,7 +3536,11 @@ def call_llm(
     retries = 0
     try:
         response, retries = _completion_with_retry(
-            completion_kwargs, max_retries=max_retries, verbose=verbose
+            completion_kwargs,
+            max_retries=max_retries,
+            verbose=verbose,
+            stream_callback=stream_callback,
+            stream_reset=stream_reset,
         )
     except ContextOverflowError:
         raise  # already has _provider_retries from _completion_with_retry
@@ -3628,6 +3713,8 @@ def call_llm(
 
     cache_stats = _log_cache_stats(response, verbose)
     choice = _pick_best_choice(response.choices)
+    if stream_callback is not None:
+        _extract_streaming_reasoning(choice.message)
     _promote_reasoning_content(choice.message)
     if sanitize_thinking:
         _sanitize_assistant_message(choice.message)
@@ -6537,6 +6624,7 @@ def run_agent_loop(
     goal_launch_turn: bool = False,
     metaskills_policy: str = "local",
     enabled_metaskills: set | None = None,
+    streaming: bool = False,
 ) -> tuple[str | None, bool]:
     """Run the tool-calling loop until a final answer or max turns.
 
@@ -6544,6 +6632,9 @@ def run_agent_loop(
     in-place compaction on overflow).
     Returns (final_answer, exhausted). final_answer is the last
     assistant text (may be None). exhausted is True if max_turns hit.
+
+    When *streaming* is True, a live dim preview of streamed LLM text
+    is shown on stderr instead of the spinner.
     """
     # Thread cache, secret_shield, and llm_filter into llm_kwargs (for main
     # loop calls via **llm_kwargs) and create a wrapper for secondary call
@@ -6815,6 +6906,22 @@ def run_agent_loop(
         _is_tools_retry = True
         turns -= 1
 
+    def _call_with_feedback(label, *args, **kwargs):
+        """Wrap call_llm with either streaming preview or spinner."""
+        if streaming:
+            with fmt.streaming_preview(label) as preview:
+                return call_llm(
+                    *args,
+                    stream_callback=preview.update,
+                    stream_reset=preview.reset,
+                    **kwargs,
+                )
+        elif verbose:
+            with fmt.llm_spinner(label):
+                return call_llm(*args, **kwargs)
+        else:
+            return call_llm(*args, **kwargs)
+
     _is_tools_retry = False
     while turns < max_turns:
         turns += 1
@@ -6908,16 +7015,15 @@ def run_agent_loop(
 
             if "command_tool_kwargs" in llm_kwargs:
                 llm_kwargs["command_tool_kwargs"]["outer_turn"] = turns
-            with (
-                fmt.llm_spinner(f"Thinking (turn {turns}/{max_turns})")
-                if verbose
-                else nullcontext()
-            ):
-                _llm_result = call_llm(*_llm_args, **llm_kwargs)
-                msg, finish_reason = _llm_result[0], _llm_result[1]
-                cmd_activity = _llm_result[2] if len(_llm_result) > 2 else []
-                _provider_retries = _llm_result[3] if len(_llm_result) > 3 else 0
-                _cache_stats = _llm_result[4] if len(_llm_result) > 4 else (0, 0)
+            _llm_result = _call_with_feedback(
+                f"Thinking (turn {turns}/{max_turns})",
+                *_llm_args,
+                **llm_kwargs,
+            )
+            msg, finish_reason = _llm_result[0], _llm_result[1]
+            cmd_activity = _llm_result[2] if len(_llm_result) > 2 else []
+            _provider_retries = _llm_result[3] if len(_llm_result) > 3 else 0
+            _cache_stats = _llm_result[4] if len(_llm_result) > 4 else (0, 0)
         except ContextOverflowError as _coe:
             elapsed = time.monotonic() - t0
             if report:
@@ -7020,22 +7126,15 @@ def run_agent_loop(
                 if "command_tool_kwargs" in llm_kwargs:
                     llm_kwargs["command_tool_kwargs"]["outer_turn"] = turns
                 try:
-                    with (
-                        fmt.llm_spinner(
-                            f"Thinking (turn {turns}/{max_turns}, compacted)"
-                        )
-                        if verbose
-                        else nullcontext()
-                    ):
-                        _llm_result = call_llm(*_llm_args, **llm_kwargs)
-                        msg, finish_reason = _llm_result[0], _llm_result[1]
-                        cmd_activity = _llm_result[2] if len(_llm_result) > 2 else []
-                        _provider_retries = (
-                            _llm_result[3] if len(_llm_result) > 3 else 0
-                        )
-                        _cache_stats = (
-                            _llm_result[4] if len(_llm_result) > 4 else (0, 0)
-                        )
+                    _llm_result = _call_with_feedback(
+                        f"Thinking (turn {turns}/{max_turns}, compacted)",
+                        *_llm_args,
+                        **llm_kwargs,
+                    )
+                    msg, finish_reason = _llm_result[0], _llm_result[1]
+                    cmd_activity = _llm_result[2] if len(_llm_result) > 2 else []
+                    _provider_retries = _llm_result[3] if len(_llm_result) > 3 else 0
+                    _cache_stats = _llm_result[4] if len(_llm_result) > 4 else (0, 0)
                 except ContextOverflowError as _coe:
                     elapsed = time.monotonic() - t0
                     if report:
@@ -7152,24 +7251,19 @@ def run_agent_loop(
                     )
                     t0 = time.monotonic()
                     try:
-                        with (
-                            fmt.llm_spinner(
-                                f"Thinking (turn {turns}/{max_turns}, no tools)"
-                            )
-                            if verbose
-                            else nullcontext()
-                        ):
-                            _llm_result = call_llm(*_llm_args, **llm_kwargs)
-                            msg, finish_reason = _llm_result[0], _llm_result[1]
-                            cmd_activity = (
-                                _llm_result[2] if len(_llm_result) > 2 else []
-                            )
-                            _provider_retries = (
-                                _llm_result[3] if len(_llm_result) > 3 else 0
-                            )
-                            _cache_stats = (
-                                _llm_result[4] if len(_llm_result) > 4 else (0, 0)
-                            )
+                        _llm_result = _call_with_feedback(
+                            f"Thinking (turn {turns}/{max_turns}, no tools)",
+                            *_llm_args,
+                            **llm_kwargs,
+                        )
+                        msg, finish_reason = _llm_result[0], _llm_result[1]
+                        cmd_activity = _llm_result[2] if len(_llm_result) > 2 else []
+                        _provider_retries = (
+                            _llm_result[3] if len(_llm_result) > 3 else 0
+                        )
+                        _cache_stats = (
+                            _llm_result[4] if len(_llm_result) > 4 else (0, 0)
+                        )
                     except ContextOverflowError:
                         continue
                     else:
@@ -7233,27 +7327,24 @@ def run_agent_loop(
                         )
                         t0 = time.monotonic()
                         try:
-                            with (
-                                fmt.llm_spinner(
-                                    f"Thinking (turn {turns}/{max_turns}, truncated)"
-                                )
-                                if verbose
-                                else nullcontext()
-                            ):
-                                _llm_result = call_llm(*_llm_args, **llm_kwargs)
-                                msg, finish_reason = (
-                                    _llm_result[0],
-                                    _llm_result[1],
-                                )
-                                cmd_activity = (
-                                    _llm_result[2] if len(_llm_result) > 2 else []
-                                )
-                                _provider_retries = (
-                                    _llm_result[3] if len(_llm_result) > 3 else 0
-                                )
-                                _cache_stats = (
-                                    _llm_result[4] if len(_llm_result) > 4 else (0, 0)
-                                )
+                            _llm_result = _call_with_feedback(
+                                f"Thinking (turn {turns}/{max_turns}, truncated)",
+                                *_llm_args,
+                                **llm_kwargs,
+                            )
+                            msg, finish_reason = (
+                                _llm_result[0],
+                                _llm_result[1],
+                            )
+                            cmd_activity = (
+                                _llm_result[2] if len(_llm_result) > 2 else []
+                            )
+                            _provider_retries = (
+                                _llm_result[3] if len(_llm_result) > 3 else 0
+                            )
+                            _cache_stats = (
+                                _llm_result[4] if len(_llm_result) > 4 else (0, 0)
+                            )
                         except ContextOverflowError:
                             continue
                         else:
@@ -9385,6 +9476,7 @@ def repl_loop(
         turn_offset=turn_offset,
         metaskills_policy=metaskills_policy,
         enabled_metaskills=enabled_metaskills,
+        streaming=verbose and fmt.stderr_is_terminal(),
     )
 
     ctx = InputContext(

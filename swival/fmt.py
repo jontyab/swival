@@ -2,10 +2,12 @@
 
 import contextlib
 import difflib
+import os
 import threading
 import time
 
 from rich.console import Console
+from rich.live import Live
 from rich.markdown import Markdown
 from rich.markup import escape
 from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
@@ -74,64 +76,80 @@ _SPINNER_PHASES: list[tuple[float, str, str, str]] = [
 ]
 
 
+class _PhaseSpinner:
+    """Phase-cycling spinner on stderr.  Call start()/stop() to control."""
+
+    def __init__(self, label: str = "Thinking"):
+        suffix = ""
+        if "(" in label:
+            idx = label.index("(")
+            suffix = " " + label[idx:].strip()
+            initial_desc = f"{_SPINNER_PHASES[0][3]}{suffix}"
+        else:
+            initial_desc = label
+        self.suffix = suffix
+
+        self._spinner_col = SpinnerColumn("dots", style="cyan", speed=1.5)
+        self._progress = Progress(
+            self._spinner_col,
+            TextColumn("  {task.description}"),
+            TimeElapsedColumn(),
+            console=_console,
+            transient=True,
+            refresh_per_second=16,
+        )
+        self._initial_desc = initial_desc
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        self._stop_event.clear()
+        self._progress.start()
+        tid = self._progress.add_task(self._initial_desc, total=None)
+        suffix = self.suffix
+        spinner_col = self._spinner_col
+        progress = self._progress
+        stop = self._stop_event
+
+        def _cycle(task_id):
+            t0 = time.monotonic()
+            phase_idx = 0
+            while not stop.wait(0.3):
+                elapsed = time.monotonic() - t0
+                new_idx = phase_idx
+                for i, (threshold, _, _, _) in enumerate(_SPINNER_PHASES):
+                    if elapsed >= threshold:
+                        new_idx = i
+                if new_idx != phase_idx:
+                    phase_idx = new_idx
+                    _, name, style, verb = _SPINNER_PHASES[phase_idx]
+                    spinner_col.spinner = Spinner(name, style=style, speed=1.5)
+                    progress.update(task_id, description=f"{verb}{suffix}")
+
+        self._thread = threading.Thread(target=_cycle, args=(tid,), daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1)
+            self._thread = None
+        self._progress.stop()
+
+
 @contextlib.contextmanager
 def llm_spinner(label: str = "Thinking"):
-    """Context manager showing a phase-cycling spinner on stderr.
-
-    The spinner style and label evolve over time to give the perception
-    of progress through distinct work stages.
-    """
+    """Context manager showing a phase-cycling spinner on stderr."""
     if not _console.is_terminal:
         yield
         return
 
-    # Extract the parenthetical suffix from the label, e.g. "(turn 2/5)"
-    # If present, we cycle verbs with the suffix appended.
-    # If not, use the label verbatim as the initial description.
-    suffix = ""
-    if "(" in label:
-        idx = label.index("(")
-        suffix = " " + label[idx:].strip()
-        initial_desc = f"{_SPINNER_PHASES[0][3]}{suffix}"
-    else:
-        initial_desc = label
-
-    spinner_col = SpinnerColumn("dots", style="cyan", speed=1.5)
-    progress = Progress(
-        spinner_col,
-        TextColumn("  {task.description}"),
-        TimeElapsedColumn(),
-        console=_console,
-        transient=True,
-        refresh_per_second=16,
-    )
-
-    stop = threading.Event()
-
-    def _cycle_phases(task_id):
-        t0 = time.monotonic()
-        phase_idx = 0
-        while not stop.wait(0.3):
-            elapsed = time.monotonic() - t0
-            new_idx = phase_idx
-            for i, (threshold, _, _, _) in enumerate(_SPINNER_PHASES):
-                if elapsed >= threshold:
-                    new_idx = i
-            if new_idx != phase_idx:
-                phase_idx = new_idx
-                _, name, style, verb = _SPINNER_PHASES[phase_idx]
-                spinner_col.spinner = Spinner(name, style=style, speed=1.5)
-                progress.update(task_id, description=f"{verb}{suffix}")
-
-    with progress:
-        tid = progress.add_task(initial_desc, total=None)
-        t = threading.Thread(target=_cycle_phases, args=(tid,), daemon=True)
-        t.start()
-        try:
-            yield
-        finally:
-            stop.set()
-            t.join(timeout=1)
+    spinner = _PhaseSpinner(label)
+    spinner.start()
+    try:
+        yield
+    finally:
+        spinner.stop()
 
 
 def completion(turns: int, exit_code: str) -> None:
@@ -448,6 +466,71 @@ def quick_shell(cmd: str, returncode: int, output: str) -> None:
 
 def repl_banner() -> None:
     _console.print(Text("Interactive mode. Type /exit or Ctrl-D to quit.", style="dim"))
+
+
+def stderr_is_terminal() -> bool:
+    """True when stderr is a TTY."""
+    return _console.is_terminal
+
+
+class streaming_preview:
+    """Spinner until first chunk, then live dim streamed-text preview.
+
+    Used as a context manager.  While active, call ``update(delta)`` to
+    append text and ``reset()`` to clear the buffer (e.g. before a retry).
+    On exit whichever display is active (spinner or Live) is torn down.
+    """
+
+    def __init__(self, label: str = "Thinking"):
+        self._label = label
+        self._buf: list[str] = []
+        self._spinner = _PhaseSpinner(label)
+        self._live: Live | None = None
+        try:
+            self._max_lines = os.get_terminal_size(2).lines - 2
+        except OSError:
+            self._max_lines = 24
+
+    def __enter__(self):
+        self._spinner.start()
+        return self
+
+    def __exit__(self, *exc):
+        if self._live is not None:
+            self._live.stop()
+            self._live = None
+        else:
+            self._spinner.stop()
+        return False
+
+    def update(self, delta: str) -> None:
+        if not delta:
+            return
+        if self._live is None:
+            self._spinner.stop()
+            self._live = Live(
+                Text(""),
+                console=_console,
+                transient=True,
+                refresh_per_second=12,
+            )
+            self._live.start()
+        self._buf.append(delta)
+        text = "".join(self._buf)
+        lines = text.split("\n")
+        if len(lines) > self._max_lines:
+            lines = lines[-self._max_lines :]
+        self._live.update(Text("\n".join(lines), style="dim"))
+
+    def reset(self) -> None:
+        self._buf.clear()
+        if self._live is not None:
+            self._live.stop()
+            self._live = None
+        else:
+            self._spinner.stop()
+        self._spinner = _PhaseSpinner(self._label)
+        self._spinner.start()
 
 
 # -- External servers (MCP / A2A) --------------------------------------------
