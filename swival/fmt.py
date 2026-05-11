@@ -48,11 +48,44 @@ def init(*, color: bool = False, no_color: bool = False) -> None:
 # -- Turn structure ----------------------------------------------------------
 
 
+_TURN_GRADIENT = [
+    (0, 180, 220),  # cyan
+    (60, 120, 220),  # blue
+    (160, 80, 200),  # magenta
+]
+
+
+class _GradientRule:
+    """A horizontal rule with a gradient color ramp and centered title."""
+
+    def __init__(self, title: str):
+        self.title = title
+
+    def __rich_console__(self, console, options):
+        width = options.max_width
+        title = f" {self.title} "
+        side = max((width - len(title)) // 2, 0)
+        text = Text()
+        for i in range(side):
+            t = i / max(width - 1, 1)
+            r, g, b = _lerp_color(_TURN_GRADIENT, t)
+            text.append("─", style=Style(color=f"rgb({r},{g},{b})"))
+        text.append(title, style=Style(bold=True, color="white"))
+        for i in range(side + len(title), width):
+            t = i / max(width - 1, 1)
+            r, g, b = _lerp_color(_TURN_GRADIENT, t)
+            text.append("─", style=Style(color=f"rgb({r},{g},{b})"))
+        yield from text.__rich_console__(console, options)
+
+
 def turn_header(n: int, max_n: int, token_est: int) -> None:
     reset_state()
     _console.print()
     title = f"Turn {n}/{max_n} (~{token_est} tokens)"
-    _console.print(Rule(title, style="cyan"))
+    if _console.is_terminal:
+        _console.print(_GradientRule(title))
+    else:
+        _console.print(Rule(title, style="cyan"))
 
 
 def llm_timing(elapsed: float, finish_reason: str) -> None:
@@ -448,6 +481,84 @@ def quick_shell(cmd: str, returncode: int, output: str) -> None:
 
 def repl_banner() -> None:
     _console.print(Text("Interactive mode. Type /exit or Ctrl-D to quit.", style="dim"))
+
+
+_LOGO = r"""
+ ███ █   █ █ █   █ ███ █
+ █   █   █ █ █   █ █ █ █
+ ███ █ █ █ █  █ █  ███ █
+   █ ██ ██ █  █ █  █ █ █
+ ███ █   █ █   █   █ █ ███
+""".strip("\n")
+
+_GRADIENT_STOPS = [
+    (0, 80, 220),  # cyan
+    (120, 60, 220),  # blue-purple
+    (200, 50, 200),  # magenta
+    (220, 160, 40),  # yellow
+]
+
+
+def _lerp_color(stops: list[tuple[int, int, int]], t: float) -> tuple[int, int, int]:
+    """Interpolate between color stops at position t in [0, 1]."""
+    t = max(0.0, min(1.0, t))
+    n = len(stops) - 1
+    idx = min(int(t * n), n - 1)
+    local_t = (t * n) - idx
+    r0, g0, b0 = stops[idx]
+    r1, g1, b1 = stops[idx + 1]
+    return (
+        int(r0 + (r1 - r0) * local_t),
+        int(g0 + (g1 - g0) * local_t),
+        int(b0 + (b1 - b0) * local_t),
+    )
+
+
+def repl_splash(
+    model: str = "",
+    provider: str = "",
+    workspace: str = "",
+) -> None:
+    """Print a colorful startup splash banner to stderr."""
+    if not _console.is_terminal:
+        return
+
+    logo_lines = _LOGO.split("\n")
+    max_len = max(len(ln) for ln in logo_lines)
+    text = Text()
+    for row_idx, row in enumerate(logo_lines):
+        padded = row.ljust(max_len)
+        for col_idx, ch in enumerate(padded):
+            t = col_idx / max(max_len - 1, 1)
+            r, g, b = _lerp_color(_GRADIENT_STOPS, t)
+            text.append(ch, style=Style(color=f"rgb({r},{g},{b})", bold=True))
+        text.append("\n")
+
+    _console.print()
+    _console.print(text, end="")
+    _console.print(Text("  https://swival.dev", style="dim"))
+
+    if model or provider or workspace:
+        info_line = Text()
+        if model:
+            info_line.append(f"  model: {model}", style="dim")
+        if provider:
+            if model:
+                info_line.append(" · ", style="dim")
+            info_line.append(f"provider: {provider}", style="dim")
+        if workspace:
+            if model or provider:
+                info_line.append(" · ", style="dim")
+            info_line.append(f"workspace: {workspace}", style="dim")
+        _console.print(info_line)
+
+    grad_rule = Text()
+    width = _console.width or 80
+    for i in range(width):
+        t = i / max(width - 1, 1)
+        r, g, b = _lerp_color(_GRADIENT_STOPS, t)
+        grad_rule.append("─", style=Style(color=f"rgb({r},{g},{b})"))
+    _console.print(grad_rule)
 
 
 # -- External servers (MCP / A2A) --------------------------------------------

@@ -9380,6 +9380,11 @@ def repl_loop(
     prompt_text = FormattedText([("class:prompt", "swival> ")])
 
     fmt.reset_state()
+    fmt.repl_splash(
+        model=model_id or "",
+        provider=llm_kwargs.get("provider", "") if llm_kwargs else "",
+        workspace=base_dir or "",
+    )
     if verbose:
         fmt.repl_banner()
 
