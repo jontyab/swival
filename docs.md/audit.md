@@ -22,8 +22,10 @@ Scope it to a directory or glob:
 
 ```text
 swival> /audit src/auth/
-swival> /audit **/*.py
+swival> /audit *.py
 ```
+
+The `*` in a glob matches across `/`, so `*.py` already covers every Python file at every depth. There is no need (and no support) for a `**` recursive form.
 
 Multiple paths can be passed; they are unioned into a single audit run with one
 state file and one set of reports:
@@ -239,6 +241,8 @@ Only files with recognized source or configuration extensions are auditable:
 Other file types (`.md`, `.png`, `.csv`, etc.) are excluded.
 
 When a focus argument is provided, it works as both an fnmatch pattern and a prefix filter. For example, `/audit src/` includes all files under `src/`, and `/audit *.py` includes all Python files.
+
+Wildcards in a focus glob match across directory separators, so a single `*` is enough to recurse. `/audit *.rs` selects every `.rs` file in the repository, including ones nested several directories deep like `crates/foo/src/bar.rs`. To restrict the recursion to a subtree, anchor the pattern with a prefix: `/audit src/*.rs` matches every `.rs` file at any depth under `src/`. Multiple patterns can be combined in one run, for example `/audit '*.rs' '*.toml'`. Quote the pattern when invoking from a shell that would expand it before swival sees it.
 
 ## State and Storage
 
