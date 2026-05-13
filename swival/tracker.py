@@ -1,8 +1,5 @@
 """File access tracker for read-before-write guard."""
 
-from __future__ import annotations
-
-
 _READ_BEFORE_WRITE_ERROR = (
     "error: cannot write to an existing file that hasn't been read first. "
     "Use read_file to inspect the current contents before modifying."

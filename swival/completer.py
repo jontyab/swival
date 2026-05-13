@@ -1,7 +1,5 @@
 """TAB completion for the Swival REPL."""
 
-from __future__ import annotations
-
 import sys
 
 from prompt_toolkit.completion import Completer, Completion, PathCompleter

@@ -6,8 +6,6 @@ fix is unambiguous.  All repairs are recorded as structured metadata so
 the telemetry pipeline can measure which fixes actually help.
 """
 
-from __future__ import annotations
-
 import difflib
 import re
 from typing import Any
