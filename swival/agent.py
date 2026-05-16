@@ -3532,6 +3532,7 @@ def call_llm(
         model=model_str,
         messages=messages,
         max_tokens=max_output_tokens,
+        timeout=900,
         **kwargs,
     )
     if tools is not None:
