@@ -3286,11 +3286,15 @@ def _is_vision_rejection(error: "AgentError") -> bool:
     return any(pattern in msg for pattern in _VISION_REJECTION_PATTERNS)
 
 
-def _completion_with_retry(completion_kwargs, *, max_retries, verbose):
+def _completion_with_retry(completion_kwargs, *, max_retries, verbose, stream_callback=None):
     """Call litellm.completion() with retry on transient errors.
 
     Returns (response, provider_retries) where provider_retries is the number
     of retries performed (0 = first attempt succeeded).
+
+    When *stream_callback* is not None, ``stream=True`` is added and chunks
+    are iterated. The callback receives each text delta. Chunks are reassembled
+    via ``litellm.stream_chunk_builder``.
 
     On failure, attaches ``_provider_retries`` to the raised exception so
     callers can record how many attempts were made before the error.
@@ -3305,6 +3309,23 @@ def _completion_with_retry(completion_kwargs, *, max_retries, verbose):
 
     for attempt in range(max_retries):
         try:
+            if stream_callback is not None:
+                raw = litellm.completion(**completion_kwargs, stream=True)
+                if hasattr(raw, "choices") and not hasattr(raw, "__next__"):
+                    return raw, attempt
+                chunks = []
+                for chunk in raw:
+                    chunks.append(chunk)
+                    if not getattr(chunk, "choices", None):
+                        continue
+                    delta = chunk.choices[0].delta
+                    delta_text = getattr(delta, "content", None) or getattr(
+                        delta, "reasoning_content", None
+                    )
+                    if delta_text:
+                        stream_callback(delta_text)
+                response = litellm.stream_chunk_builder(chunks)
+                return response, attempt
             return litellm.completion(**completion_kwargs), attempt
         except litellm.ContextWindowExceededError:
             coe = ContextOverflowError("context window exceeded (typed)")
@@ -3372,6 +3393,7 @@ def call_llm(
     llm_filter=None,
     call_kind="agent",
     aws_profile=None,
+    stream_callback=None,
 ):
     """Call LiteLLM with the appropriate provider.
 
@@ -3632,7 +3654,8 @@ def call_llm(
     retries = 0
     try:
         response, retries = _completion_with_retry(
-            completion_kwargs, max_retries=max_retries, verbose=verbose
+            completion_kwargs, max_retries=max_retries, verbose=verbose,
+            stream_callback=stream_callback,
         )
     except ContextOverflowError:
         raise  # already has _provider_retries from _completion_with_retry
@@ -6577,6 +6600,8 @@ def _run_main(args, report, _write_report, parser):
     # REPL path
     if report:
         loop_kwargs["report"] = report
+    if sys.stderr.isatty() and hasattr(fmt, "streaming_preview"):
+        llm_kwargs["stream_callback"] = True  # sentinel; actual callback set per-call
     _sa_holder = [subagent_manager]
     try:
         if args.question:
@@ -7082,17 +7107,22 @@ def run_agent_loop(
 
             if "command_tool_kwargs" in llm_kwargs:
                 llm_kwargs["command_tool_kwargs"]["outer_turn"] = turns
-            with (
-                fmt.llm_spinner(f"Thinking (turn {turns}/{max_turns})")
-                if verbose
-                else nullcontext()
-            ):
-                _llm_result = call_llm(*_llm_args, **llm_kwargs)
-                msg, finish_reason = _llm_result[0], _llm_result[1]
-                cmd_activity = _llm_result[2] if len(_llm_result) > 2 else []
-                _provider_retries = _llm_result[3] if len(_llm_result) > 3 else 0
-                _cache_stats = _llm_result[4] if len(_llm_result) > 4 else (0, 0)
-                _raise_if_truncated_tool_call(
+            _streaming = "stream_callback" in llm_kwargs and hasattr(fmt, "streaming_preview")
+            if _streaming:
+                with fmt.streaming_preview(f"Thinking (turn {turns}/{max_turns})") as _preview:
+                    _llm_result = call_llm(*_llm_args, **{k: v for k, v in llm_kwargs.items() if k != "stream_callback"}, stream_callback=_preview.update)
+            else:
+                with (
+                    fmt.llm_spinner(f"Thinking (turn {turns}/{max_turns})")
+                    if verbose
+                    else nullcontext()
+                ):
+                    _llm_result = call_llm(*_llm_args, **llm_kwargs)
+            msg, finish_reason = _llm_result[0], _llm_result[1]
+            cmd_activity = _llm_result[2] if len(_llm_result) > 2 else []
+            _provider_retries = _llm_result[3] if len(_llm_result) > 3 else 0
+            _cache_stats = _llm_result[4] if len(_llm_result) > 4 else (0, 0)
+            _raise_if_truncated_tool_call(
                     msg,
                     finish_reason,
                     provider_retries=_provider_retries,

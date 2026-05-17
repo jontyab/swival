@@ -6,6 +6,7 @@ import threading
 import time
 
 from rich.console import Console
+from rich.live import Live
 from rich.markdown import Markdown
 from rich.markup import escape
 from rich.panel import Panel
@@ -497,7 +498,14 @@ class _LeftBar:
             yield newline
 
 
+_stream_shown = False
+
+
 def assistant_text(text: str) -> None:
+    global _stream_shown
+    if _stream_shown:
+        _stream_shown = False
+        return
     src_lines = text.split("\n")
     if len(src_lines) > _ASSISTANT_MAX_LINES:
         remaining = len(src_lines) - _ASSISTANT_MAX_LINES
@@ -668,6 +676,109 @@ def repl_splash(
     if workspace:
         _console.print(Text(f"  workspace: {workspace}", style="dim"))
 
+
+
+# -- Streaming preview -------------------------------------------------------
+
+import os
+from rich.box import Box
+
+_LEFT_ONLY_BOX = Box(
+    "    \n"
+    "│   \n"
+    "    \n"
+    "│   \n"
+    "│   \n"
+    "    \n"
+    "│   \n"
+    "    \n"
+)
+
+
+class streaming_preview:
+    """Spinner until first chunk, then live syntax-highlighted preview.
+
+    On exit, prints a dimmed truncated Markdown summary.
+    """
+
+    def __init__(self, label: str = "Thinking"):
+        self._label = label
+        self._buf: list[str] = []
+        self._spinner_ctx = None
+        self._live: Live | None = None
+        try:
+            self._max_lines = os.get_terminal_size(2).lines - 4
+        except OSError:
+            self._max_lines = 20
+
+    def __enter__(self):
+        self._spinner_ctx = llm_spinner(self._label)
+        self._spinner_ctx.__enter__()
+        return self
+
+    def __exit__(self, *exc):
+        if self._live is not None:
+            self._live.stop()
+            self._live = None
+        elif self._spinner_ctx is not None:
+            self._spinner_ctx.__exit__(None, None, None)
+            self._spinner_ctx = None
+        # Print dimmed truncated summary
+        global _stream_shown
+        _stream_shown = True
+        text = "".join(self._buf).strip()
+        if text:
+            lines = text.splitlines()
+            if len(lines) > 10:
+                text = "\n".join(lines[:10]) + "\n\n…"
+            from rich.panel import Panel
+            _console.print(Panel(
+                Markdown(text, style="dim"),
+                border_style="blue dim",
+                box=_LEFT_ONLY_BOX,
+                padding=(0, 1),
+                expand=True,
+            ))
+        return False
+
+    def update(self, delta: str) -> None:
+        if not delta:
+            return
+        if self._live is None:
+            if self._spinner_ctx is not None:
+                self._spinner_ctx.__exit__(None, None, None)
+                self._spinner_ctx = None
+            self._live = Live(
+                Text(""),
+                console=_console,
+                transient=True,
+                refresh_per_second=4,
+            )
+            self._live.start()
+        self._buf.append(delta)
+        text = "".join(self._buf)
+        lines = text.split("\n")
+        if len(lines) > self._max_lines:
+            lines = lines[-self._max_lines:]
+        visible = "\n".join(lines)
+
+        import textwrap
+        wrap_width = max(_console.width - 2, 40)
+        wrapped = []
+        for line in visible.splitlines():
+            if len(line) > wrap_width:
+                wrapped.extend(textwrap.wrap(line, wrap_width) or [""])
+            else:
+                wrapped.append(line)
+        if len(wrapped) > self._max_lines:
+            wrapped = wrapped[-self._max_lines:]
+
+        from rich.syntax import Syntax
+        renderable = Syntax(
+            "\n".join(wrapped), "markdown", theme="ansi_dark",
+            background_color="default",
+        )
+        self._live.update(renderable)
 
 # -- External servers (MCP / A2A) --------------------------------------------
 

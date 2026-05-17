@@ -563,8 +563,9 @@ class TestReplAnswer:
         finally:
             fmt._stdout_console = old
         output = buf.getvalue()
-        assert "**bold text**" in output  # raw markers preserved for copy/paste
-        assert "\x1b[" in output  # but with ANSI styling
+        assert "bold text" in output  # rendered text remains
+        assert "**" not in output  # markers consumed by Markdown renderer
+        assert "\x1b[" in output  # with ANSI styling
 
 
 class TestReviewFeedback:
