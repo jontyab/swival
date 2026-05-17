@@ -83,10 +83,7 @@ def turn_header(n: int, max_n: int, token_est: int) -> None:
     reset_state()
     _console.print()
     title = f"Turn {n}/{max_n} (~{token_est} tokens)"
-    if _console.is_terminal:
-        _console.print(_GradientRule(title))
-    else:
-        _console.print(Rule(title, style="cyan"))
+    _console.print(Rule(title, style="cyan"))
 
 
 def llm_timing(elapsed: float, finish_reason: str) -> None:
@@ -100,11 +97,6 @@ def llm_timing(elapsed: float, finish_reason: str) -> None:
 _SPINNER_PHASES: list[tuple[float, str, str, str]] = [
     # (min_seconds, spinner_name, style, verb)
     (0, "dots", "cyan", "Thinking"),
-    (3, "dots2", "cyan", "Reasoning"),
-    (8, "dots3", "blue", "Composing"),
-    (15, "dots", "magenta", "Elaborating"),
-    (25, "dots2", "blue", "Refining"),
-    (40, "dots3", "cyan", "Polishing"),
 ]
 
 
@@ -521,18 +513,9 @@ def assistant_text(text: str) -> None:
 
 
 def repl_answer(text: str) -> None:
-    """Print a REPL answer to stdout, with syntax highlighting when on a TTY."""
+    """Print a REPL answer to stdout, rendered as markdown when on a TTY."""
     if _stdout_console.is_terminal and not _stdout_console.no_color:
-        from rich.syntax import Syntax
-
-        highlighted = Syntax(
-            text,
-            "markdown",
-            theme="ansi_dark",
-            background_color="default",
-            word_wrap=True,
-        )
-        _stdout_console.print(highlighted)
+        _stdout_console.print(Markdown(text))
     else:
         print(text)
 
@@ -678,49 +661,12 @@ def repl_splash(
     provider: str = "",
     workspace: str = "",
 ) -> None:
-    """Print a colorful startup splash banner to stderr."""
+    """Print startup info to stderr."""
     if not _console.is_terminal:
         return
 
-    logo_lines = _LOGO.split("\n")
-    max_len = max(len(ln) for ln in logo_lines)
-    text = Text()
-    row_count = len(logo_lines)
-    for row_idx, row in enumerate(logo_lines):
-        padded = row.ljust(max_len)
-        for col_idx, ch in enumerate(padded):
-            col_t = col_idx / max(max_len - 1, 1)
-            row_t = row_idx / max(row_count - 1, 1)
-            t = (col_t * 0.82) + (row_t * 0.18)
-            r, g, b = _lerp_color(_GRADIENT_STOPS, t)
-            text.append(ch, style=Style(color=f"rgb({r},{g},{b})", bold=True))
-        text.append("\n")
-
-    _console.print()
-    _console.print(text, end="")
-    _console.print(Text("  https://swival.dev", style="dim"))
-
-    if model or provider or workspace:
-        info_line = Text()
-        if model:
-            info_line.append(f"  model: {model}", style="dim")
-        if provider:
-            if model:
-                info_line.append(" · ", style="dim")
-            info_line.append(f"provider: {provider}", style="dim")
-        if workspace:
-            if model or provider:
-                info_line.append(" · ", style="dim")
-            info_line.append(f"workspace: {workspace}", style="dim")
-        _console.print(info_line)
-
-    grad_rule = Text()
-    width = _console.width or 80
-    for i in range(width):
-        t = i / max(width - 1, 1)
-        r, g, b = _lerp_color(_GRADIENT_STOPS, t)
-        grad_rule.append("─", style=Style(color=f"rgb({r},{g},{b})"))
-    _console.print(grad_rule)
+    if workspace:
+        _console.print(Text(f"  workspace: {workspace}", style="dim"))
 
 
 # -- External servers (MCP / A2A) --------------------------------------------

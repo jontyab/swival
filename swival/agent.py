@@ -5781,7 +5781,8 @@ def build_system_prompt(
                 system_content += "\n\n" + memory_text
 
     now = datetime.now().astimezone()
-    system_content += f"\n\nCurrent date and time: {now.strftime('%Y-%m-%d %H:%M %Z')}"
+    clamped = now.replace(minute=now.minute // 15 * 15, second=0, microsecond=0)
+    system_content += f"\n\nCurrent date and time: {clamped.strftime('%Y-%m-%d %H:%M %Z')}"
 
     # Normal tool-info sections are skipped for the command provider; its XML
     # tool-call catalog is injected above in command-provider format.
